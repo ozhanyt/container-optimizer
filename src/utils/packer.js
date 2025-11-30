@@ -1,12 +1,13 @@
 
 export class Box {
-    constructor(width, height, depth, id) {
+    constructor(width, height, depth, id, typeId) {
         this.width = width;
         this.height = height;
         this.depth = depth;
         this.id = id;
+        this.typeId = typeId; // To check compatibility
         this.position = null; // {x, y, z}
-        this.rotation = 0; // 0: none, 1: 90 deg on Y axis (width/depth swap) - simplified for now
+        this.rotation = 0;
         this.color = "#3b82f6";
     }
 }
@@ -20,8 +21,13 @@ export class Container {
 }
 
 /**
- * Packs multiple box types using a "Potential Points" heuristic (Tetris-like).
- * Prioritizes filling gaps: Front-to-Back (X), then Narrow-to-Wide (Z), then Bottom-Up (Y).
+ * Packs multiple box types using a "Layer-First" heuristic.
+ * Prioritizes:
+ * 1. Bottom-Up (Y): Fill the floor first to ensure stability and gap at top.
+ * 2. Front-to-Back (X): Fill from the door inwards (or front wall).
+ * 3. Narrow-to-Wide (Z): Fill columns.
+ * 
+ * Constraint: No Mixed Stacking (Type B cannot sit on Type A).
  */
 export function pack(containerWidth, containerHeight, containerDepth, boxTypes, allowRotation = true) {
     const container = new Container(containerWidth, containerHeight, containerDepth);
@@ -33,31 +39,27 @@ export function pack(containerWidth, containerHeight, containerDepth, boxTypes, 
 
     let idCounter = 0;
 
-    // Process each box type in priority order
-    for (const boxType of boxTypes) {
+    // Process each box type
+    boxTypes.forEach((boxType, typeIndex) => {
         let quantity = boxType.quantity === 0 ? Infinity : boxType.quantity;
-        // Safety break for infinite loop if quantity is 0 (meaning "fill as much as possible")
-        // We'll limit "Infinity" to a reasonable max number to prevent browser crash if logic fails
         if (quantity === Infinity) quantity = 10000;
 
         for (let i = 0; i < quantity; i++) {
-            // Sort points to prioritize: X (Front), then Z (Left/Narrow), then Y (Bottom)
-            // This ensures we fill columns (Y) within a row (Z) within a slice (X)
-
+            // Sort points: Y (Bottom) -> X (Front) -> Z (Left)
+            // This ensures we fill the floor area first before stacking up.
             potentialPoints.sort((a, b) => {
+                if (a.y !== b.y) return a.y - b.y;
                 if (a.x !== b.x) return a.x - b.x;
-                if (a.z !== b.z) return a.z - b.z;
-                return a.y - b.y;
+                return a.z - b.z;
             });
 
             let bestPlacement = null;
 
-            // Try to find a valid point for this box
+            // Try to find a valid point
             pointLoop:
             for (let pIndex = 0; pIndex < potentialPoints.length; pIndex++) {
                 const point = potentialPoints[pIndex];
 
-                // Define orientations to try
                 const orientations = allowRotation ? [
                     [boxType.width, boxType.height, boxType.depth],
                     [boxType.width, boxType.depth, boxType.height],
@@ -70,55 +72,49 @@ export function pack(containerWidth, containerHeight, containerDepth, boxTypes, 
                 ];
 
                 for (const [w, h, d] of orientations) {
-                    // Check container bounds
+                    // 1. Check container bounds
                     if (point.x + w > containerWidth || point.y + h > containerHeight || point.z + d > containerDepth) {
                         continue;
                     }
 
-                    // Check collision with placed boxes
-                    let collision = false;
-                    for (const placed of placedBoxes) {
-                        if (intersect({ x: point.x, y: point.y, z: point.z, w, h, d },
-                            { x: placed.position.x, y: placed.position.y, z: placed.position.z, w: placed.width, h: placed.height, d: placed.depth })) {
-                            collision = true;
-                            break;
-                        }
+                    // 2. Check collision with placed boxes
+                    if (checkCollision(point, w, h, d, placedBoxes)) {
+                        continue;
                     }
 
-                    if (!collision) {
-                        bestPlacement = { point, w, h, d, pIndex };
-                        break pointLoop; // Found a fit!
+                    // 3. Check Support & Type Compatibility
+                    // Must be on floor OR supported by boxes of SAME type
+                    if (!checkSupport(point, w, h, d, placedBoxes, typeIndex)) {
+                        continue;
                     }
+
+                    bestPlacement = { point, w, h, d, pIndex };
+                    break pointLoop;
                 }
             }
 
             if (bestPlacement) {
                 const { point, w, h, d, pIndex } = bestPlacement;
 
-                const box = new Box(w, h, d, idCounter++);
+                const box = new Box(w, h, d, idCounter++, typeIndex);
                 box.position = { x: point.x, y: point.y, z: point.z };
                 box.color = boxType.color;
                 placedBoxes.push(box);
                 totalVolumePacked += w * h * d;
 
-                // Remove the used point
+                // Remove used point
                 potentialPoints.splice(pIndex, 1);
 
-                // Add new potential points (Top, Right, Front relative to this box)
-                // We add them to the list, they will be sorted next iteration
+                // Add new points
                 addPoint(potentialPoints, point.x + w, point.y, point.z, containerWidth, containerHeight, containerDepth);
                 addPoint(potentialPoints, point.x, point.y + h, point.z, containerWidth, containerHeight, containerDepth);
                 addPoint(potentialPoints, point.x, point.y, point.z + d, containerWidth, containerHeight, containerDepth);
 
             } else {
-                // Could not place this box anywhere. 
-                // If quantity was specific, we stop for this type? 
-                // Or should we try to fit others? 
-                // Usually if one doesn't fit, we stop this type.
-                break;
+                break; // Cannot place this box
             }
         }
-    }
+    });
 
     const volumeContainer = containerWidth * containerHeight * containerDepth;
     const efficiency = totalVolumePacked / volumeContainer;
@@ -133,12 +129,64 @@ export function pack(containerWidth, containerHeight, containerDepth, boxTypes, 
 
 function addPoint(points, x, y, z, cw, ch, cd) {
     if (x >= cw || y >= ch || z >= cd) return;
-    // Optional: Check if point is already inside another box or duplicate
-    // For simplicity, just add. Sorting handles priority.
-    // Optimization: Don't add if already exists
     if (!points.some(p => p.x === x && p.y === y && p.z === z)) {
         points.push({ x, y, z });
     }
+}
+
+function checkCollision(point, w, h, d, placedBoxes) {
+    const b1 = { x: point.x, y: point.y, z: point.z, w, h, d };
+    for (const placed of placedBoxes) {
+        const b2 = {
+            x: placed.position.x,
+            y: placed.position.y,
+            z: placed.position.z,
+            w: placed.width,
+            h: placed.height,
+            d: placed.depth
+        };
+        if (intersect(b1, b2)) return true;
+    }
+    return false;
+}
+
+function checkSupport(point, w, h, d, placedBoxes, currentTypeId) {
+    // If on floor, valid
+    if (point.y === 0) return true;
+
+    // Check area immediately below
+    const bottomFace = {
+        x: point.x,
+        y: point.y - 0.1, // Slightly below
+        z: point.z,
+        w: w,
+        h: 0.1, // Thin slice
+        d: d
+    };
+
+    let hasSupport = false;
+
+    for (const placed of placedBoxes) {
+        const b2 = {
+            x: placed.position.x,
+            y: placed.position.y,
+            z: placed.position.z,
+            w: placed.width,
+            h: placed.height,
+            d: placed.depth
+        };
+
+        if (intersect(bottomFace, b2)) {
+            // Found a supporting box
+            hasSupport = true;
+            // Check type
+            if (placed.typeId !== currentTypeId) {
+                return false; // Mixed stacking forbidden
+            }
+        }
+    }
+
+    return hasSupport; // Must have at least one supporting box (Gravity)
 }
 
 function intersect(b1, b2) {
