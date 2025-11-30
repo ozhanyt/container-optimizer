@@ -23,6 +23,32 @@ const InputForm = ({ onCalculate }) => {
     };
 
     const handleBoxChange = (id, field, value) => {
+        setBoxTypes(prev => prev.map(box =>
+            box.id === id ? { ...box, [field]: Number(value) } : box
+        ));
+    };
+
+    const addBoxType = () => {
+        setBoxTypes(prev => {
+            const newId = Math.max(...prev.map(b => b.id), 0) + 1;
+            const colors = ['#3b82f6', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#14b8a6'];
+            const nextColor = colors[(newId - 1) % colors.length];
+
+            return [...prev, {
+                id: newId,
+                width: 50,
+                height: 50,
+                depth: 50,
+                quantity: 0,
+                color: nextColor
+            }];
+        });
+    };
+
+    const removeBoxType = (id) => {
+        if (boxTypes.length > 1) {
+            setBoxTypes(prev => prev.filter(box => box.id !== id));
+        }
     };
 
     return (
