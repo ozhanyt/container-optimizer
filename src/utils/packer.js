@@ -45,12 +45,13 @@ export function pack(containerWidth, containerHeight, containerDepth, boxTypes, 
         if (quantity === Infinity) quantity = 10000;
 
         for (let i = 0; i < quantity; i++) {
-            // Sort points: Y (Bottom) -> X (Front) -> Z (Left)
-            // This ensures we fill the floor area first before stacking up.
+            // Sort points: X (Front) -> Z (Left) -> Y (Bottom)
+            // This prioritizes building a "Wall" (filling Y and Z at current X) before moving deeper (X).
+            // This is crucial for multiple box types where Type 2 cannot sit on Type 1; Type 1 must leave floor space.
             potentialPoints.sort((a, b) => {
-                if (a.y !== b.y) return a.y - b.y;
                 if (a.x !== b.x) return a.x - b.x;
-                return a.z - b.z;
+                if (a.z !== b.z) return a.z - b.z;
+                return a.y - b.y;
             });
 
             let bestPlacement = null;
